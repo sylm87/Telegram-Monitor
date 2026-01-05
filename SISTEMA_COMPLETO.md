@@ -214,7 +214,3 @@ Para que el esquema se aplique:
 
 - La carpeta bind-mount de datos Postgres debe estar vacía en el primer arranque.
 - Luego `docker compose up -d --build`.
-
-## 🧰 Utilidades
-
-Scripts de soporte/reporting y pruebas se agrupan en `utils/`.
