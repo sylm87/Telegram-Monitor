@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.session
+.env
+.env.local
+.env.*
+.env.client*
+!.env.example
+!.env.example.*
+!.env.*.example
+.env.client1
+docker-compose.yml

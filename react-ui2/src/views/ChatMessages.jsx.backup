@@ -1,0 +1,237 @@
+import { useState, useEffect, useRef } from 'react'
+import React from 'react'
+import { useFetch } from '../hooks'
+import { apiService } from '../services/api'
+import { Button, Card, Loader, Badge } from '../components'
+import { formatDate, formatFileSize } from '../utils/helpers'
+import './ChatMessages.css'
+
+/**
+ * Chat Messages View with auto-scroll and infinite loading
+ */
+export function ChatMessages({ chat }) {
+  const [filters, setFilters] = useState({
+    account: chat.account_phone,
+    limit: 100,
+    before_id: null
+  })
+
+  const { data: response, loading, refetch } = useFetch(
+    () => apiService.chats.getMessages(chat.chat_id, filters),
+    [filters]
+  )
+
+  const [allMessages, setAllMessages] = useState([])
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const [oldestMsgId, setOldestMsgId] = useState(null) // ID del mensaje más antiguo cargado
+  const [newestMsgId, setNewestMsgId] = useState(null) // ID del mensaje más reciente cargado
+  const messagesEndRef = useRef(null)
+  const messagesContainerRef = useRef(null)
+  const previousScrollHeight = useRef(0)
+  const isInitialLoad = useRef(true)
+  const isAutoScrolling = useRef(false) // Flag para evitar conflictos durante auto-scroll
+
+  // Process messages immediately to avoid rendering unsorted messages
+  const messages = response?.messages || []
+  const hasMore = response?.more || false
+  
+  // Prepare sorted messages before rendering
+  const sortedMessages = React.useMemo(() => {
+    if (messages.length === 0) return []
+    // API returns DESC (newest first), we reverse to show chronological (oldest first)
+    return [...messages].reverse()
+  }, [messages])
+
+  // Update messages when new data arrives
+  useEffect(() => {
+    if (sortedMessages.length > 0) {
+      if (filters.before_id) {
+        // Loading older messages - prepend to the beginning
+        setAllMessages(prev => [...sortedMessages, ...prev])
+        // Update oldest message ID
+        setOldestMsgId(sortedMessages[0].msg_id)
+      } else {
+        // Initial load or refresh - filter only new messages if we already have some
+        if (newestMsgId) {
+          // Only add messages newer than what we have
+          const newMessages = sortedMessages.filter(msg => msg.msg_id > newestMsgId)
+          if (newMessages.length > 0) {
+            setAllMessages(prev => [...prev, ...newMessages])
+            setNewestMsgId(newMessages[newMessages.length - 1].msg_id)
+          }
+        } else {
+          // Initial load - set all messages and track IDs
+          setAllMessages(sortedMessages)
+          setOldestMsgId(sortedMessages[0].msg_id)
+          setNewestMsgId(sortedMessages[sortedMessages.length - 1].msg_id)
+        }
+      }
+    }
+  }, [sortedMessages, filters.before_id, newestMsgId])
+
+  // Scroll to bottom ONLY on initial load
+  useEffect(() => {
+    if (isInitialLoad.current && allMessages.length > 0 && messagesEndRef.current) {
+      // Initial load - scroll to bottom immediately after messages render
+      isAutoScrolling.current = true
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        setIsAtBottom(true)
+        isInitialLoad.current = false
+        setTimeout(() => { isAutoScrolling.current = false }, 100)
+      })
+    }
+  }, [allMessages.length])
+
+  // Auto-scroll to bottom ONLY when user is at bottom and new messages arrive
+  useEffect(() => {
+    // Solo hacer scroll si el usuario está pegado abajo (isAtBottom = true)
+    // y NO es la carga inicial, y NO estamos cargando mensajes antiguos
+    if (!isInitialLoad.current && isAtBottom && allMessages.length > 0 && messagesEndRef.current && !filters.before_id) {
+      isAutoScrolling.current = true
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+      setTimeout(() => { isAutoScrolling.current = false }, 500)
+    }
+  }, [allMessages.length])
+
+  // Scroll inmediato cuando el usuario vuelve al fondo manualmente
+  useEffect(() => {
+    if (!isInitialLoad.current && isAtBottom && allMessages.length > 0 && messagesEndRef.current) {
+      isAutoScrolling.current = true
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+      setTimeout(() => { isAutoScrolling.current = false }, 500)
+    }
+  }, [isAtBottom])
+
+  // Restore scroll position after loading older messages
+  useEffect(() => {
+    if (filters.before_id && messagesContainerRef.current && previousScrollHeight.current > 0) {
+      const container = messagesContainerRef.current
+      const newScrollHeight = container.scrollHeight
+      const scrollDiff = newScrollHeight - previousScrollHeight.current
+      container.scrollTop = scrollDiff
+      previousScrollHeight.current = 0
+    }
+  }, [allMessages, filters.before_id])
+
+  // Check if user is at bottom
+  const handleScroll = (e) => {
+    // Ignorar eventos de scroll durante auto-scroll automático
+    if (isAutoScrolling.current) {
+      return
+    }
+
+    const container = e.target
+    const threshold = 20 // Threshold más permisivo para detectar si está en el fondo
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold
+    setIsAtBottom(atBottom)
+
+    // Load more when scrolling to top
+    if (container.scrollTop < 200 && hasMore && !loading) {
+      handleLoadOlder()
+    }
+  }
+
+  const handleLoadOlder = () => {
+    if (oldestMsgId && !loading) {
+      previousScrollHeight.current = messagesContainerRef.current?.scrollHeight || 0
+      // Use the oldest message ID we have
+      setFilters(prev => ({ ...prev, before_id: oldestMsgId }))
+    }
+  }
+
+  const handleScrollToBottom = () => {
+    isAutoScrolling.current = true
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    setIsAtBottom(true)
+    setTimeout(() => { isAutoScrolling.current = false }, 500)
+  }
+
+  // Auto-refresh every 5 seconds to get new messages
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Always refetch without before_id to get latest messages
+      // The update logic will filter and only add newer messages
+      setFilters(prev => ({ ...prev, before_id: null }))
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <div className="chat-messages-view">
+      {/* Scrollable Messages Container */}
+      <div 
+        className="messages-container" 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+      >
+        {loading && allMessages.length === 0 ? (
+          <Loader text="Cargando mensajes..." />
+        ) : (
+          <>
+            {hasMore && allMessages.length > 0 && (
+              <div className="load-older-indicator">
+                {loading ? (
+                  <span className="loading-text">⬆️ Cargando mensajes antiguos...</span>
+                ) : (
+                  <span className="scroll-hint">⬆️ Scroll arriba para cargar más</span>
+                )}
+              </div>
+            )}
+
+            <div className="messages-list">
+              {allMessages.length > 0 ? (
+                allMessages.map((message) => (
+                  <Card key={message.msg_id} className="message-card">
+                    <div className="message-header">
+                      <span className="message-id">#{message.msg_id}</span>
+                      <span className="message-date">
+                        {formatDate(message.created_at)}
+                      </span>
+                    </div>
+
+                    {message.text && (
+                      <div className="message-text">{message.text}</div>
+                    )}
+
+                    {message.media_file_path && (
+                      <div className="message-media">
+                        <div className="media-info">
+                          <Badge variant="secondary">{message.media_type || 'Media'}</Badge>
+                        </div>
+                        {message.media_type?.includes('image') || message.media_type?.includes('photo') ? (
+                          <img
+                            src={apiService.getMediaUrl(message.media_file_path)}
+                            alt="Media"
+                            className="media-preview"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="media-file">
+                            <span>📄 {message.media_file_path.split('/').pop()}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Card>
+                ))
+              ) : (
+                <div className="empty-state">
+                  <p>No hay mensajes para mostrar</p>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {!isAtBottom && (
+              <button className="scroll-to-bottom" onClick={handleScrollToBottom}>
+                ⬇️ Ir abajo
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}

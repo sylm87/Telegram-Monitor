@@ -1,0 +1,88 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
+  border: 2px solid var(--primary);
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btn:hover:not(.btn-disabled) {
+  background: var(--primary);
+  color: var(--bg-primary);
+  box-shadow: 0 0 10px var(--primary);
+}
+
+.btn:active:not(.btn-disabled) {
+  transform: scale(0.98);
+}
+
+/* Variants */
+.btn-primary {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-primary:hover:not(.btn-disabled) {
+  background: var(--primary);
+  color: var(--bg-primary);
+}
+
+.btn-secondary {
+  border-color: var(--secondary);
+  color: var(--secondary);
+}
+
+.btn-secondary:hover:not(.btn-disabled) {
+  background: var(--secondary);
+  color: var(--bg-primary);
+}
+
+.btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(.btn-disabled) {
+  background: var(--danger);
+  color: var(--bg-primary);
+}
+
+/* Sizes */
+.btn-small {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+}
+
+.btn-medium {
+  padding: 0.6rem 1.2rem;
+  font-size: 0.875rem;
+}
+
+.btn-large {
+  padding: 0.8rem 1.6rem;
+  font-size: 1rem;
+}
+
+/* States */
+.btn-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-loader {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

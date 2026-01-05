@@ -1,0 +1,99 @@
+services:
+  # Base de datos PostgreSQL
+  postgres:
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    image: telegram-postgres:15-alpine
+    container_name: telegram-db
+    command: postgres -c max_connections=10000 -c shared_buffers=1GB -c effective_cache_size=4GB -c max_wal_size=4GB -c work_mem=16MB
+    env_file: .env
+    volumes:
+      - <path_local_data_DB>:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - telegram_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telegram} -d ${POSTGRES_DB:-telegram_monitor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cliente Telegram - Cuenta 1
+  telegram-client-1:
+    build:
+      context: ./telegram_client
+      dockerfile: Dockerfile
+    container_name: telegram-client-1
+    env_file:
+      - .env
+      - .env.client1
+    volumes:
+      - <path_downloads>:/app/media_downloads
+      - <path_err-logs_client_X>:/output/err-logs
+      - <path_out-logs_client_X>:/output/out-logs
+    networks:
+      - telegram_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: python -m telegram_client.main listen --catch-up --download
+    # Ahora listen usa un único thread con event handlers en tiempo real
+    # --catch-up: procesa mensajes históricos pendientes
+    # --download: descarga media automáticamente
+
+  # Generador de string token de Telegram
+  telegram-init: 
+    build:
+      context: ./telegram_client
+      dockerfile: Dockerfile
+    container_name: telegram-init
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+    networks:
+      - telegram_network
+    profiles:
+      - init
+    command: python -m telegram_client.main init --export-string
+
+  # API de gestión para el Frontend
+  telegram-api-gest:
+    build: ./fastapi-api
+    container_name: telegram-api-gest
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - <path_downloads>:/app/media_downloads:ro
+    networks:
+      - telegram_network
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # Frontend de gestión
+  telegram-front-gest:
+    build:
+      context: ./react-ui2
+      args:
+        VITE_API_BASE: ${API_BASE:-http://127.0.0.1:8000}
+      x-bake:
+        provenance: false
+    container_name: telegram-front-gest
+    depends_on:
+      - telegram-api-gest
+    networks:
+      - telegram_network
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+networks:
+  telegram_network:
+    driver: bridge

@@ -1,0 +1,126 @@
+.downloads-view {
+  padding: 1rem;
+}
+
+.downloads-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--border);
+  gap: 1rem;
+}
+
+.downloads-stats {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+  min-height: 76px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary);
+  font-family: 'Courier New', monospace;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: center;
+  line-height: 1.1;
+  min-height: 2.2em; /* reserva espacio para 2 líneas */
+  max-width: 100%;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .downloads-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .auto-refresh {
+    justify-content: flex-end;
+  }
+}
+
+.auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.75rem;
+}
+
+.auto-refresh input {
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.downloads-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.download-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+  transition: all 0.3s ease;
+}
+
+.download-item:hover {
+  border-color: var(--primary);
+  box-shadow: 0 0 10px rgba(0, 255, 0, 0.1);
+}
+
+.download-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.download-date {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.download-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.download-meta-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
