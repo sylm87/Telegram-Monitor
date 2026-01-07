@@ -1,3 +1,4 @@
+import json
 import os
 from typing import List, Optional, Dict, Any
 
@@ -27,6 +28,32 @@ class Settings(BaseSettings):
     )
 
     media_root: str = Field(default="/app/media_downloads", validation_alias=AliasChoices("MEDIA_ROOT", "TG_MEDIA_DIR"))
+
+    # CORS: acepta "*", CSV ("https://a.com,https://b.com") o JSON ("[\"https://a.com\", ...]")
+    cors_allow_origins: str = Field(
+        default="*",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS", "CORS_ORIGINS", "ALLOW_ORIGINS"),
+    )
+
+
+def parse_cors_allow_origins(value: str) -> List[str]:
+    raw = (value or "").strip()
+    if raw == "" or raw == "*":
+        return ["*"]
+
+    # Permite lista JSON para evitar problemas con comas/espacios
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                origins = [str(x).strip() for x in parsed if str(x).strip()]
+                return origins or ["*"]
+        except Exception:
+            pass
+
+    # CSV: separar por coma
+    origins = [part.strip() for part in raw.split(",") if part.strip()]
+    return origins or ["*"]
 
 
 class QueueStats(BaseModel):
@@ -99,12 +126,13 @@ class MessageWithLog(BaseModel):
 
 settings = Settings()
 app = FastAPI(title="Telegram Monitor API", version="0.1.0")
+
+_cors_origins = parse_cors_allow_origins(settings.cors_allow_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"]
-    ,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 _pool = None
