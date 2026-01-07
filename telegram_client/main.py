@@ -150,6 +150,15 @@ def build_client() -> TelegramClient:
 
 
 async def iter_all_dialogs(client: TelegramClient):
+    # Si Telethon está desconectado, intentar reconectar antes de iterar.
+    # Esto evita spam de logs y permite recuperar tras microcortes de red.
+    if not client.is_connected():
+        try:
+            await client.connect()
+        except Exception as e:
+            logger.warning(f"  No se pudo reconectar a Telegram antes de listar diálogos: {e}")
+            return
+
     try:
         logger.info("  Iterando diálogos sin filtro de folder...")
         count = 0
@@ -170,6 +179,18 @@ async def iter_all_dialogs(client: TelegramClient):
                 logger.info(f"  Diálogos encontrados en folder={folder}: {count}")
             except Exception as e2:
                 logger.warning(f"  No se pudieron obtener diálogos (folder={folder}): {e2}")
+
+
+async def _ensure_connected(client: TelegramClient, sleep_seconds: int = 10) -> bool:
+    if client.is_connected():
+        return True
+    try:
+        await client.connect()
+        return client.is_connected()
+    except Exception as e:
+        logger.warning(f"Cliente desconectado y no se pudo reconectar (reintento en {sleep_seconds}s): {e}")
+        await asyncio.sleep(sleep_seconds)
+        return False
 
 
 def _is_interactive_tty() -> bool:
@@ -1245,6 +1266,10 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
                 while True:
                     global_iteration += 1
                     logger.info(f"\n=== PASADA {global_iteration} de catch-up global ===")
+
+                    # Si el cliente se cayó, reconectar antes de intentar iterar diálogos.
+                    if not await _ensure_connected(client, sleep_seconds=10):
+                        continue
                     
                     total_catchup = 0
                     total_gaps_filled = 0
