@@ -510,31 +510,58 @@ async def _process_queue_item(client: TelegramClient, row: dict, semaphore: asyn
     async with semaphore:
         download_logger.info(f"📥 Iniciando descarga: Chat={row['chat_id']}, MSG#{row['msg_id']}, Queue ID={row['id']}")
 
-        try:
-            msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
-            if not msg:
-                raise RuntimeError("Mensaje no encontrado para descarga")
-            chat = await msg.get_chat()
-            chat_name = getattr(chat, 'title', None) or getattr(chat, 'username', None) or str(row['chat_id'])
-            download_logger.info(f"   Descargando de '{chat_name}' - MSG#{row['msg_id']}")
-            path = await _download_media_task(msg, chat, row.get("media_dir") or media_dir, max_mb)
-            conn2 = get_db_connection()
+        max_retries = 5
+        retry_count = 0
+        last_exception = None
+
+        while retry_count < max_retries:
+            # Si estamos desconectados, intentar reconectar con backoff antes de tocar la red.
+            # Evita spam de "Cannot send requests while disconnected" y recupera tras microcortes.
+            sleep_seconds = min(60, 2 ** retry_count)
+            if not await _ensure_connected(client, sleep_seconds=sleep_seconds):
+                retry_count += 1
+                last_exception = RuntimeError("Cliente desconectado")
+                continue
+
             try:
-                if path:
-                    mark_download_done(conn2, row["id"], path)
-                    download_logger.info(f"   ✓ Descarga completada: {path}")
-                else:
-                    mark_download_failed(conn2, row["id"], "Sin ruta devuelta")
-                    download_logger.warning(f"   ✗ Descarga sin ruta devuelta para MSG#{row['msg_id']}")
-            finally:
-                close_db_connection(conn2)
-        except Exception as exc:
-            conn3 = get_db_connection()
-            try:
-                mark_download_failed(conn3, row["id"], str(exc))
-                download_logger.error(f"   ❌ Error descargando MSG#{row['msg_id']}: {str(exc)[:100]}")
-            finally:
-                close_db_connection(conn3)
+                msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
+                if not msg:
+                    raise RuntimeError("Mensaje no encontrado para descarga")
+
+                chat = await msg.get_chat()
+                chat_name = getattr(chat, 'title', None) or getattr(chat, 'username', None) or str(row['chat_id'])
+                download_logger.info(f"   Descargando de '{chat_name}' - MSG#{row['msg_id']}")
+                path = await _download_media_task(msg, chat, row.get("media_dir") or media_dir, max_mb)
+
+                conn2 = get_db_connection()
+                try:
+                    if path:
+                        mark_download_done(conn2, row["id"], path)
+                        download_logger.info(f"   ✓ Descarga completada: {path}")
+                    else:
+                        mark_download_failed(conn2, row["id"], "Sin ruta devuelta")
+                        download_logger.warning(f"   ✗ Descarga sin ruta devuelta para MSG#{row['msg_id']}")
+                finally:
+                    close_db_connection(conn2)
+                return
+            except Exception as exc:
+                retry_count += 1
+                last_exception = exc
+                if retry_count < max_retries:
+                    wait_time = min(60, 2 ** retry_count)
+                    download_logger.warning(
+                        f"   ⚠ Error descargando MSG#{row['msg_id']} (intento {retry_count}/{max_retries}), reintentando en {wait_time}s: {str(exc)[:200]}"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                conn3 = get_db_connection()
+                try:
+                    mark_download_failed(conn3, row["id"], str(last_exception))
+                    download_logger.error(f"   ❌ Error descargando MSG#{row['msg_id']}: {str(last_exception)[:100]}")
+                finally:
+                    close_db_connection(conn3)
+                return
 
 
 async def process_download_queue(
@@ -573,6 +600,11 @@ async def process_download_queue(
     tasks_recent = set()
 
     while True:
+        # Si hay corte de red, mejor reintentar reconexión con backoff antes de lanzar nuevas tareas.
+        # (Las tareas individuales también protegen sus llamadas con _ensure_connected.)
+        if not await _ensure_connected(client, sleep_seconds=10):
+            continue
+
         # Limpia tareas terminadas y contabiliza
         done = {t for t in tasks if t.done()}
         tasks = {t for t in tasks if not t.done()}
@@ -1115,6 +1147,11 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
         
         while retry_count < max_retries:
             try:
+                # Si nos quedamos desconectados, intentar reconectar antes de procesar.
+                if not await _ensure_connected(client, sleep_seconds=min(60, 2 ** retry_count)):
+                    retry_count += 1
+                    last_exception = RuntimeError("Cliente desconectado")
+                    continue
                 await _process_message(client, event.message, download, media_dir, max_mb, logger_live, account_phone)
                 return  # Éxito
             except Exception as e:
@@ -1138,6 +1175,11 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
         
         while retry_count < max_retries:
             try:
+                # Si nos quedamos desconectados, intentar reconectar antes de procesar.
+                if not await _ensure_connected(client, sleep_seconds=min(60, 2 ** retry_count)):
+                    retry_count += 1
+                    last_exception = RuntimeError("Cliente desconectado")
+                    continue
                 await _process_edited_message(client, event.message, download, media_dir, max_mb)
                 return  # Éxito
             except Exception as e:
