@@ -1214,224 +1214,245 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
     # Catch-up opcional (basado en BD, no en state.json)
     # Se ejecuta en paralelo con los event handlers y las descargas
     if catch_up:
-        try:
-            if chats is not None:
-                # Catch-up para un chat específico
-                chat_id = (await client.get_entity(chats)).id if not isinstance(chats, int) else chats
-                key = str(chat_id)
-                
-                db = get_db_connection()
-                try:
-                    max_msg_id_in_db = get_max_message_id_in_chat(db, chat_id, account_phone)
-                finally:
-                    close_db_connection(db)
-                
-                logger.info(f"Catch-up para chat {key}: buscando mensajes con ID > {max_msg_id_in_db}")
-                
-                # Semáforo balanceado para velocidad sin saturar pool ni flood wait de Telegram
-                # Con 64 clientes: 64 × 50 = 3,200 tareas (< pool 250 × 64 = 16,000)
-                semaphore = asyncio.Semaphore(50)
-                
-                async def process_with_limit(msg):
-                    async with semaphore:
-                        max_retries = 5
-                        retry_count = 0
-                        last_exception = None
-                        
-                        while retry_count < max_retries:
-                            try:
-                                await _process_message(client, msg, download, media_dir, max_mb, logger_catchup, account_phone)
-                                return  # Éxito
-                            except Exception as e:
-                                retry_count += 1
-                                last_exception = e
-                                if retry_count < max_retries:
-                                    wait_time = 2 ** retry_count  # Backoff exponencial: 2s, 4s, 8s, 16s, 32s
-                                    logger.warning(f"Error en MSG#{msg.id} (intento {retry_count}/{max_retries}), reintentando en {wait_time}s: {str(e)}")
-                                    await asyncio.sleep(wait_time + 0.1)  # +0.1s para liberar pool
-                                else:
-                                    logger.exception(f"❌ FALLO CRÍTICO: MSG#{msg.id} en chat {chat_id} tras {max_retries} reintentos. NO SE GUARDÓ EL MENSAJE.")
-                                    logger.exception(f"Última excepción: {last_exception}")
-                
-                count_catchup = 0
-                batch_size = 200
-                tasks = []
-                
-                async for msg in client.iter_messages(chats, min_id=max_msg_id_in_db, reverse=True):
-                    tasks.append(asyncio.create_task(process_with_limit(msg)))
-                    _update_last_id(state, msg.chat_id, msg.id)
-                    count_catchup += 1
-                    
-                    # Procesar batch cuando alcance el límite
-                    if len(tasks) >= batch_size:
-                        await asyncio.gather(*tasks)
-                        tasks = []
-                
-                # Procesar mensajes restantes
-                if tasks:
-                    await asyncio.gather(*tasks)
-                
-                _save_state(state)
-                logger.info(f"Catch-up completado: {count_catchup} mensajes procesados")
-            else:
-                # Catch-up para TODOS los chats
-                logger.info("Catch-up para TODOS los chats (iterativo hasta completar TODOS los gaps)...")
-                
-                # Semáforo balanceado para velocidad sin saturar pool ni flood wait de Telegram
-                # Con 64 clientes: 64 × 50 = 3,200 tareas (< pool 250 × 64 = 16,000)
-                semaphore = asyncio.Semaphore(50)
-                
-                global_iteration = 0
-                total_global_catchup = 0
-                
-                async def process_with_limit(msg, chat_id, dialog_name):
-                    async with semaphore:
-                        max_retries = 5
-                        retry_count = 0
-                        last_exception = None
-                        
-                        while retry_count < max_retries:
-                            try:
-                                await _process_message(client, msg, download, media_dir, max_mb, logger_catchup, account_phone)
-                                return  # Éxito
-                            except Exception as e:
-                                retry_count += 1
-                                last_exception = e
-                                if retry_count < max_retries:
-                                    wait_time = 2 ** retry_count  # Backoff exponencial: 2s, 4s, 8s, 16s, 32s
-                                    logger.warning(f"Error en MSG#{msg.id} en {dialog_name} (intento {retry_count}/{max_retries}), reintentando en {wait_time}s: {str(e)}")
-                                    await asyncio.sleep(wait_time)
-                                else:
-                                    logger.exception(f"❌ FALLO CRÍTICO: MSG#{msg.id} en chat {chat_id} ({dialog_name}) tras {max_retries} reintentos. NO SE GUARDÓ.")
-                                    logger.exception(f"Última excepción: {last_exception}")
-                
-                while True:
-                    global_iteration += 1
-                    logger.info(f"\n=== PASADA {global_iteration} de catch-up global ===")
+        attempt = 0
+        while True:
+            try:
+                if chats is not None:
+                    # Catch-up para un chat específico
+                    chat_id = (await client.get_entity(chats)).id if not isinstance(chats, int) else chats
+                    key = str(chat_id)
 
-                    # Si el cliente se cayó, reconectar antes de intentar iterar diálogos.
-                    if not await _ensure_connected(client, sleep_seconds=10):
-                        continue
-                    
-                    total_catchup = 0
-                    total_gaps_filled = 0
-                    total_dialogs = 0
-                    async for dialog in iter_all_dialogs(client):
-                        total_dialogs += 1
-                        chat_id = dialog.id
-                        db = get_db_connection()
+                    db = get_db_connection()
+                    try:
+                        max_msg_id_in_db = get_max_message_id_in_chat(db, chat_id, account_phone)
+                    finally:
+                        close_db_connection(db)
+
+                    logger.info(f"Catch-up para chat {key}: buscando mensajes con ID > {max_msg_id_in_db}")
+
+                    # Semáforo balanceado para velocidad sin saturar pool ni flood wait de Telegram
+                    # Con 64 clientes: 64 × 50 = 3,200 tareas (< pool 250 × 64 = 16,000)
+                    semaphore = asyncio.Semaphore(50)
+
+                    async def process_with_limit(msg):
+                        async with semaphore:
+                            max_retries = 5
+                            retry_count = 0
+                            last_exception = None
+
+                            while retry_count < max_retries:
+                                try:
+                                    await _process_message(client, msg, download, media_dir, max_mb, logger_catchup, account_phone)
+                                    return  # Éxito
+                                except Exception as e:
+                                    retry_count += 1
+                                    last_exception = e
+                                    if retry_count < max_retries:
+                                        wait_time = 2 ** retry_count  # Backoff exponencial: 2s, 4s, 8s, 16s, 32s
+                                        logger.warning(f"Error en MSG#{msg.id} (intento {retry_count}/{max_retries}), reintentando en {wait_time}s: {str(e)}")
+                                        await asyncio.sleep(wait_time + 0.1)  # +0.1s para liberar pool
+                                    else:
+                                        logger.exception(f"❌ FALLO CRÍTICO: MSG#{msg.id} en chat {chat_id} tras {max_retries} reintentos. NO SE GUARDÓ EL MENSAJE.")
+                                        logger.exception(f"Última excepción: {last_exception}")
+
+                    count_catchup = 0
+                    batch_size = 200
+                    tasks = []
+
+                    async for msg in client.iter_messages(chats, min_id=max_msg_id_in_db, reverse=True):
+                        tasks.append(asyncio.create_task(process_with_limit(msg)))
+                        _update_last_id(state, msg.chat_id, msg.id)
+                        count_catchup += 1
+
+                        # Procesar batch cuando alcance el límite
+                        if len(tasks) >= batch_size:
+                            await asyncio.gather(*tasks)
+                            tasks = []
+
+                    # Procesar mensajes restantes
+                    if tasks:
+                        await asyncio.gather(*tasks)
+
+                    _save_state(state)
+                    logger.info(f"Catch-up completado: {count_catchup} mensajes procesados")
+
+                    # Chat específico: si llegó hasta aquí, consideramos catch-up completado.
+                    break
+                else:
+                    # Catch-up para TODOS los chats
+                    logger.info("Catch-up para TODOS los chats (iterativo hasta completar TODOS los gaps)...")
+
+                    # Semáforo balanceado para velocidad sin saturar pool ni flood wait de Telegram
+                    # Con 64 clientes: 64 × 50 = 3,200 tareas (< pool 250 × 64 = 16,000)
+                    semaphore = asyncio.Semaphore(50)
+
+                    global_iteration = 0
+                    total_global_catchup = 0
+
+                    async def process_with_limit(msg, chat_id, dialog_name):
+                        async with semaphore:
+                            max_retries = 5
+                            retry_count = 0
+                            last_exception = None
+
+                            while retry_count < max_retries:
+                                try:
+                                    await _process_message(client, msg, download, media_dir, max_mb, logger_catchup, account_phone)
+                                    return  # Éxito
+                                except Exception as e:
+                                    retry_count += 1
+                                    last_exception = e
+                                    if retry_count < max_retries:
+                                        wait_time = 2 ** retry_count  # Backoff exponencial: 2s, 4s, 8s, 16s, 32s
+                                        logger.warning(f"Error en MSG#{msg.id} en {dialog_name} (intento {retry_count}/{max_retries}), reintentando en {wait_time}s: {str(e)}")
+                                        await asyncio.sleep(wait_time)
+                                    else:
+                                        logger.exception(f"❌ FALLO CRÍTICO: MSG#{msg.id} en chat {chat_id} ({dialog_name}) tras {max_retries} reintentos. NO SE GUARDÓ.")
+                                        logger.exception(f"Última excepción: {last_exception}")
+
+                    while True:
+                        global_iteration += 1
+                        logger.info(f"\n=== PASADA {global_iteration} de catch-up global ===")
+
+                        # Si el cliente se cayó, reconectar antes de intentar iterar diálogos.
+                        if not await _ensure_connected(client, sleep_seconds=10):
+                            continue
+
+                        # Si la BD no está lista, no tirar el catch-up: reintentar luego.
                         try:
-                            max_msg_id_in_db = get_max_message_id_in_chat(db, chat_id, account_phone)
-                            # Obtener gaps intermedios
-                            gaps = get_chat_gaps(db, chat_id, account_phone, limit=100)  # Top 100 gaps más grandes
-                        finally:
-                            close_db_connection(db)
-                        
-                        logger.info(f"  [{total_dialogs}] → Chat '{dialog.name}' (id={chat_id})")
-                        count_catchup = 0
-                        tasks = []
-                        batch_size = 200
-                        
-                        try:
-                            # PASO 1: Obtener mensajes NUEVOS (posteriores al último guardado)
-                            logger.info(f"      Buscando mensajes nuevos desde id>{max_msg_id_in_db}")
-                            async for msg in client.iter_messages(dialog.entity, min_id=max_msg_id_in_db, limit=None, reverse=True, wait_time=0.5):
-                                tasks.append(asyncio.create_task(process_with_limit(msg, chat_id, dialog.name)))
-                                _update_last_id(state, msg.chat_id, msg.id)
-                                count_catchup += 1
-                                
-                                # Procesar batch cuando alcance el límite
-                                if len(tasks) >= batch_size:
+                            db_ping = get_db_connection()
+                            try:
+                                with db_ping.cursor() as cur:
+                                    cur.execute("SELECT 1")
+                            finally:
+                                close_db_connection(db_ping)
+                        except Exception as e:
+                            logger.warning(f"PostgreSQL no disponible para catch-up (reintento en 30s): {e}")
+                            await asyncio.sleep(30)
+                            continue
+
+                        total_catchup = 0
+                        total_gaps_filled = 0
+                        total_dialogs = 0
+                        async for dialog in iter_all_dialogs(client):
+                            total_dialogs += 1
+                            chat_id = dialog.id
+
+                            try:
+                                db = get_db_connection()
+                                try:
+                                    max_msg_id_in_db = get_max_message_id_in_chat(db, chat_id, account_phone)
+                                    gaps = get_chat_gaps(db, chat_id, account_phone, limit=100)  # Top 100 gaps más grandes
+                                finally:
+                                    close_db_connection(db)
+                            except Exception as e:
+                                logger.warning(f"    ✗ No se pudo consultar BD para chat id={chat_id} ('{dialog.name}'): {e}")
+                                await asyncio.sleep(1)
+                                continue
+
+                            logger.info(f"  [{total_dialogs}] → Chat '{dialog.name}' (id={chat_id})")
+                            count_catchup = 0
+                            tasks = []
+                            batch_size = 200
+
+                            try:
+                                # PASO 1: Obtener mensajes NUEVOS (posteriores al último guardado)
+                                logger.info(f"      Buscando mensajes nuevos desde id>{max_msg_id_in_db}")
+                                async for msg in client.iter_messages(dialog.entity, min_id=max_msg_id_in_db, limit=None, reverse=True, wait_time=0.5):
+                                    tasks.append(asyncio.create_task(process_with_limit(msg, chat_id, dialog.name)))
+                                    _update_last_id(state, msg.chat_id, msg.id)
+                                    count_catchup += 1
+
+                                    # Procesar batch cuando alcance el límite
+                                    if len(tasks) >= batch_size:
+                                        await asyncio.gather(*tasks)
+                                        tasks = []
+                                        if count_catchup % 250 == 0:
+                                            logger.info(f"      Procesados {count_catchup} mensajes nuevos...")
+
+                                # Procesar mensajes restantes
+                                if tasks:
                                     await asyncio.gather(*tasks)
-                                    tasks = []
-                                    if count_catchup % 250 == 0:
-                                        logger.info(f"      Procesados {count_catchup} mensajes nuevos...")
-                            
-                            # Procesar mensajes restantes
-                            if tasks:
-                                await asyncio.gather(*tasks)
-                            
-                            # PASO 2: Rellenar GAPS intermedios
-                            if gaps:
-                                logger.info(f"      🔍 Encontrados {len(gaps)} gaps - Rellenando los más grandes...")
-                                gaps_filled = 0
-                                for gap_row in gaps[:10]:  # Procesar top 10 gaps más grandes
-                                    gap_start = int(gap_row['gap_start']) if isinstance(gap_row, dict) else int(gap_row[0])
-                                    gap_end = int(gap_row['gap_end']) if isinstance(gap_row, dict) else int(gap_row[1])
-                                    gap_size = int(gap_row['gap_size']) if isinstance(gap_row, dict) else int(gap_row[2])
-                                    
-                                    if gap_size > 0:  # Todos los gaps, incluso de 1 mensaje
-                                        seen_ids = set()
-                                        logger.info(f"      → Rellenando gap: mensajes {gap_start} a {gap_end} ({gap_size} faltantes)")
-                                        # Obtener mensajes en el rango del gap
-                                        async for msg in client.iter_messages(dialog.entity, 
-                                                                             min_id=gap_start-1, 
-                                                                             max_id=gap_end+1, 
-                                                                             limit=gap_size,
-                                                                             reverse=True,
-                                                                             wait_time=0.5):
-                                            tasks.append(asyncio.create_task(process_with_limit(msg, chat_id, dialog.name)))
-                                            count_catchup += 1
-                                            gaps_filled += 1
-                                            seen_ids.add(msg.id)
-                                            
-                                            if len(tasks) >= batch_size:
+
+                                # PASO 2: Rellenar GAPS intermedios
+                                if gaps:
+                                    logger.info(f"      🔍 Encontrados {len(gaps)} gaps - Rellenando los más grandes...")
+                                    gaps_filled = 0
+                                    for gap_row in gaps[:10]:  # Procesar top 10 gaps más grandes
+                                        gap_start = int(gap_row['gap_start']) if isinstance(gap_row, dict) else int(gap_row[0])
+                                        gap_end = int(gap_row['gap_end']) if isinstance(gap_row, dict) else int(gap_row[1])
+                                        gap_size = int(gap_row['gap_size']) if isinstance(gap_row, dict) else int(gap_row[2])
+
+                                        if gap_size > 0:  # Todos los gaps, incluso de 1 mensaje
+                                            seen_ids = set()
+                                            logger.info(f"      → Rellenando gap: mensajes {gap_start} a {gap_end} ({gap_size} faltantes)")
+                                            async for msg in client.iter_messages(
+                                                dialog.entity,
+                                                min_id=gap_start - 1,
+                                                max_id=gap_end + 1,
+                                                limit=gap_size,
+                                                reverse=True,
+                                                wait_time=0.5,
+                                            ):
+                                                tasks.append(asyncio.create_task(process_with_limit(msg, chat_id, dialog.name)))
+                                                count_catchup += 1
+                                                gaps_filled += 1
+                                                seen_ids.add(msg.id)
+
+                                                if len(tasks) >= batch_size:
+                                                    await asyncio.gather(*tasks)
+                                                    tasks = []
+
+                                            if tasks:
                                                 await asyncio.gather(*tasks)
                                                 tasks = []
-                                        
-                                        # Procesar batch del gap
-                                        if tasks:
-                                            await asyncio.gather(*tasks)
-                                            tasks = []
 
-                                        # Marcar como irrecuperables los ids no devueltos por Telegram
-                                        missing_ids = set(range(gap_start, gap_end + 1)) - seen_ids
-                                        if missing_ids:
-                                            db_placeholder = get_db_connection()
-                                            try:
-                                                for missing_id in sorted(missing_ids):
-                                                    mark_message_unrecoverable(db_placeholder, chat_id, missing_id, account_phone, "telegram_missing")
-                                                db_placeholder.commit()
-                                            finally:
-                                                close_db_connection(db_placeholder)
-                                
-                                if gaps_filled > 0:
-                                    logger.info(f"      ✓ Rellenados {gaps_filled} mensajes en gaps")
-                                    total_gaps_filled += gaps_filled
-                            
-                            if count_catchup == 0:
-                                logger.info(f"      ⊘ Sin mensajes nuevos ni gaps")
-                            else:
-                                logger.info(f"      ✓ Total procesado: {count_catchup} mensajes")
-                            total_catchup += count_catchup
-                        except Exception as e:
-                            logger.warning(f"    ✗ Error en catch-up de '{dialog.name}': {e}")
-                    
-                    _save_state(state)
-                    logger.info(f"✓ Pasada {global_iteration}: {total_dialogs} chats, {total_catchup} mensajes ({total_gaps_filled} gaps rellenados)")
-                    total_global_catchup += total_catchup
-                    
-                    # Si no hay nuevos mensajes ni gaps, dormir y seguir sondeando
-                    if total_catchup == 0:
-                        logger.info(f"✓ Convergencia alcanzada en pasada {global_iteration} - no hay nuevos mensajes ni gaps")
-                        await asyncio.sleep(3)
-                        continue
-                    
-                    # Aún hay mensajes: continuar siguiente pasada inmediatamente
-                    logger.info(f"⏳ Aún hay mensajes pendientes - Iniciando pasada {global_iteration + 1}...")
-                
-                logger.info(f"\n✓ Catch-up iterativo completado: {total_global_catchup} mensajes totales en {global_iteration} pasada(s)")
-                logger.info("🟢 Catch-up finalizado - Procesador de descargas continúa en background")
-                logger.info(f"\n✓ Catch-up iterativo completado: {total_global_catchup} mensajes totales en {global_iteration} pasada(s)")
-                
-                # Procesar cola de descargas después del catch-up
-                if download:
-                    logger.info("\n" + "="*80)
-                    logger.info("📥 PROCESANDO COLA DE DESCARGAS PENDIENTES")
-                    logger.info("="*80)
-                    await process_download_queue(client, media_dir, max_mb, concurrency=8, stop_when_empty=True)
-        except Exception as exc:
-            logger.error(f"Error en catch-up: {exc}")
+                                            # Marcar como irrecuperables los ids no devueltos por Telegram
+                                            missing_ids = set(range(gap_start, gap_end + 1)) - seen_ids
+                                            if missing_ids:
+                                                try:
+                                                    db_placeholder = get_db_connection()
+                                                    try:
+                                                        for missing_id in sorted(missing_ids):
+                                                            mark_message_unrecoverable(db_placeholder, chat_id, missing_id, account_phone, "telegram_missing")
+                                                        db_placeholder.commit()
+                                                    finally:
+                                                        close_db_connection(db_placeholder)
+                                                except Exception as e:
+                                                    logger.warning(f"      ⚠ No se pudieron marcar placeholders de gap (chat={chat_id}): {e}")
+
+                                    if gaps_filled > 0:
+                                        logger.info(f"      ✓ Rellenados {gaps_filled} mensajes en gaps")
+                                        total_gaps_filled += gaps_filled
+
+                                if count_catchup == 0:
+                                    logger.info("      ⊘ Sin mensajes nuevos ni gaps")
+                                else:
+                                    logger.info(f"      ✓ Total procesado: {count_catchup} mensajes")
+                                total_catchup += count_catchup
+                            except Exception as e:
+                                logger.warning(f"    ✗ Error en catch-up de '{dialog.name}': {e}")
+
+                        _save_state(state)
+                        logger.info(f"✓ Pasada {global_iteration}: {total_dialogs} chats, {total_catchup} mensajes ({total_gaps_filled} gaps rellenados)")
+                        total_global_catchup += total_catchup
+
+                        # Si no hay nuevos mensajes ni gaps, dormir y seguir sondeando
+                        if total_catchup == 0:
+                            logger.info(f"✓ Convergencia alcanzada en pasada {global_iteration} - no hay nuevos mensajes ni gaps")
+                            await asyncio.sleep(3)
+                            continue
+
+                        logger.info(f"⏳ Aún hay mensajes pendientes - Iniciando pasada {global_iteration + 1}...")
+            except Exception as exc:
+                attempt += 1
+                delay = min(300, 5 * (2 ** min(attempt, 6)))  # 5s..300s
+                logger.error(f"Error en catch-up (reintento en {delay}s): {exc}")
+                await asyncio.sleep(delay)
+                continue
+
+            # Si llegamos aquí sin excepción y es global, nunca debería pasar.
+            break
     
     # Mantener el cliente activo para recibir eventos en tiempo real
     # El catch-up (si estaba activo) ya terminó, ahora solo escuchamos eventos nuevos
