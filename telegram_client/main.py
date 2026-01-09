@@ -24,6 +24,8 @@ from telethon.tl.types import (
 )
 from telethon.errors import SessionPasswordNeededError
 
+from .notifier import get_notifier
+
 from .db import (
     get_db_connection, close_db_connection, insert_or_update_chat, insert_or_update_sender,
     insert_message, insert_reactions, insert_entities, update_message,
@@ -1122,6 +1124,21 @@ async def catch_up_chat(client: TelegramClient, target: str, download: bool = Fa
 async def run_listener(client: TelegramClient, target: Optional[str], download: bool = False, media_dir: Optional[str] = None, catch_up: bool = False, max_mb: Optional[int] = None) -> None:
     # Obtener account_phone del entorno
     account_phone = os.environ.get("TG_PHONE", "unknown")
+
+    notifier = get_notifier(logger=logger)
+
+    async def _notify(key: str, text: str, *, min_interval_seconds: int) -> None:
+        if not notifier.enabled:
+            return
+        try:
+            await asyncio.to_thread(
+                notifier.notify,
+                key=key,
+                text=text,
+                min_interval_seconds=min_interval_seconds,
+            )
+        except Exception as exc:
+            logger.warning(f"No se pudo enviar notificación (key={key}): {exc}")
     
     chats = None
     if target:
@@ -1130,6 +1147,12 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
         logger.info("Escuchando solo el chat indicado")
     else:
         logger.info("Escuchando todos los chats. Ctrl+C para salir.")
+
+    await _notify(
+        "startup",
+        f"🟢 Telegram client iniciado (account={account_phone}, catch_up={catch_up}, download={download})",
+        min_interval_seconds=int(os.environ.get("TG_NOTIFY_STARTUP_COOLDOWN_SECONDS", "21600")),
+    )
 
     # Estado de último mensaje
     state = _load_state()
@@ -1214,7 +1237,13 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
     # Catch-up opcional (basado en BD, no en state.json)
     # Se ejecuta en paralelo con los event handlers y las descargas
     if catch_up:
+        await _notify(
+            "catchup_start",
+            "⏳ Catch-up activado: comenzando procesamiento histórico.",
+            min_interval_seconds=int(os.environ.get("TG_NOTIFY_CATCHUP_START_COOLDOWN_SECONDS", "3600")),
+        )
         attempt = 0
+        idle_notified = False
         while True:
             try:
                 if chats is not None:
@@ -1328,6 +1357,11 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
                                 close_db_connection(db_ping)
                         except Exception as e:
                             logger.warning(f"PostgreSQL no disponible para catch-up (reintento en 30s): {e}")
+                            await _notify(
+                                "catchup_db_unavailable",
+                                f"⚠ PostgreSQL no disponible durante catch-up. Reintento en 30s. ({type(e).__name__}: {e})",
+                                min_interval_seconds=int(os.environ.get("TG_NOTIFY_DB_COOLDOWN_SECONDS", "900")),
+                            )
                             await asyncio.sleep(30)
                             continue
 
@@ -1432,22 +1466,48 @@ async def run_listener(client: TelegramClient, target: Optional[str], download: 
                                 total_catchup += count_catchup
                             except Exception as e:
                                 logger.warning(f"    ✗ Error en catch-up de '{dialog.name}': {e}")
+                                await _notify(
+                                    "catchup_chat_error",
+                                    f"⚠ Error en catch-up de '{dialog.name}' (chat_id={chat_id}). Continúa. ({type(e).__name__}: {e})",
+                                    min_interval_seconds=int(os.environ.get("TG_NOTIFY_ERROR_COOLDOWN_SECONDS", "900")),
+                                )
 
                         _save_state(state)
                         logger.info(f"✓ Pasada {global_iteration}: {total_dialogs} chats, {total_catchup} mensajes ({total_gaps_filled} gaps rellenados)")
+
+                        if total_gaps_filled > 0:
+                            await _notify(
+                                "catchup_gaps_filled",
+                                f"✅ Catch-up: rellenados {total_gaps_filled} gaps en la pasada {global_iteration} ({total_dialogs} chats).",
+                                min_interval_seconds=int(os.environ.get("TG_NOTIFY_GAPS_COOLDOWN_SECONDS", "1800")),
+                            )
                         total_global_catchup += total_catchup
 
                         # Si no hay nuevos mensajes ni gaps, dormir y seguir sondeando
                         if total_catchup == 0:
                             logger.info(f"✓ Convergencia alcanzada en pasada {global_iteration} - no hay nuevos mensajes ni gaps")
+                            if not idle_notified:
+                                await _notify(
+                                    "catchup_no_gaps",
+                                    f"✅ Catch-up finalizado: 0 pendientes (pasada {global_iteration}, {total_dialogs} chats).",
+                                    min_interval_seconds=int(os.environ.get("TG_NOTIFY_NO_GAPS_COOLDOWN_SECONDS", "21600")),
+                                )
+                                idle_notified = True
                             await asyncio.sleep(3)
                             continue
+
+                        idle_notified = False
 
                         logger.info(f"⏳ Aún hay mensajes pendientes - Iniciando pasada {global_iteration + 1}...")
             except Exception as exc:
                 attempt += 1
                 delay = min(300, 5 * (2 ** min(attempt, 6)))  # 5s..300s
                 logger.error(f"Error en catch-up (reintento en {delay}s): {exc}")
+                await _notify(
+                    "catchup_error",
+                    f"❌ Error en catch-up. Reintento en {delay}s. (attempt={attempt}, {type(exc).__name__}: {exc})",
+                    min_interval_seconds=int(os.environ.get("TG_NOTIFY_ERROR_COOLDOWN_SECONDS", "900")),
+                )
                 await asyncio.sleep(delay)
                 continue
 
