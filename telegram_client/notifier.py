@@ -34,6 +34,28 @@ def _chunk_text(text: str, chunk_size: int = 3800) -> list[str]:
     return chunks
 
 
+def _build_notification_prefix() -> str:
+    """Combina TG_NOTIFY_PREFIX con TG_PHONE.
+
+    Ejemplo:
+      TG_NOTIFY_PREFIX='[Telegram-Monitor][DEV]'
+      TG_PHONE='+34666666666'
+      => '[Telegram-Monitor][DEV][+34666666666]'
+    """
+    raw_prefix = (os.environ.get("TG_NOTIFY_PREFIX") or "").strip()
+    raw_phone = (os.environ.get("TG_PHONE") or "").strip()
+
+    pieces: list[str] = []
+    if raw_prefix:
+        pieces.append(raw_prefix)
+    if raw_phone:
+        if raw_phone.startswith("[") and raw_phone.endswith("]"):
+            pieces.append(raw_phone)
+        else:
+            pieces.append(f"[{raw_phone}]")
+    return "".join(pieces)
+
+
 @dataclass(frozen=True)
 class TelegramNotifyConfig:
     token: str
@@ -84,11 +106,8 @@ class TelegramBotNotifier:
                 return False
             self._last_sent_by_key[key] = now
 
-        prefix = os.environ.get("TG_NOTIFY_PREFIX")
-        if prefix:
-            text_to_send = f"{prefix} {text}".strip()
-        else:
-            text_to_send = text
+        prefix = _build_notification_prefix()
+        text_to_send = f"{prefix} {text}".strip() if prefix else text
 
         attempted = False
         for chat_id in config.chat_ids:

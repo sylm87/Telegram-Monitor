@@ -129,6 +129,34 @@ docker compose logs -f postgres
 - UI: `http://localhost:3000`
 - API: `http://localhost:8000/health`
 
+### Test de notificaciones (Telegram Bot API)
+
+Si has configurado las variables de notificación (sin compartirlas):
+
+```env
+TG_NOTIFY_BOT_TOKEN=123456789:AA...   # token del bot (placeholder)
+TG_NOTIFY_CHAT_IDS=12345678          # chat id o -100... (placeholder)
+TG_NOTIFY_PREFIX=[Telegram-Monitor][DEV]
+```
+
+y tu cliente carga también `TG_PHONE` desde `.env.clientN`:
+
+```env
+TG_PHONE=+34XXXXXXXXX
+```
+
+Puedes enviar una notificación de prueba desde el contenedor del cliente:
+
+```powershell
+docker compose exec -T telegram-client-1 python -c "import time; from telegram_client.notifier import get_notifier; n=get_notifier(); n.notify(key=f'test_notify_{int(time.time())}', text='Test de notificación', min_interval_seconds=0); print('OK')"
+```
+
+Salida esperada en Telegram (ejemplo):
+
+```text
+[Telegram-Monitor][DEV][+34XXXXXXXXX] Test de notificación
+```
+
 ## 🧰 Utilidades
 
 Scripts moved a `utils/`:
